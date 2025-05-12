@@ -16,14 +16,14 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // 1️⃣ Destructure timezone along with messages and model
+  // 1️⃣ Pull in messages, model, and client timezone
   const { messages, model, timezone } = req.body as {
     messages: Message[];
     model?: string;
     timezone?: string;
   };
 
-  // 2️⃣ Basic validation
+  // 2️⃣ Validate inputs
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'Missing messages' });
   }
@@ -31,7 +31,7 @@ export default async function handler(
     return res.status(500).json({ error: 'Missing TOGETHER_API_KEY' });
   }
 
-  // 3️⃣ Compute “current date” using the client’s timezone (or UTC fallback)
+  // 3️⃣ Build the “current date” system message in user’s timezone
   const tz = typeof timezone === 'string' ? timezone : 'UTC';
   let todayDate: string;
   try {
@@ -43,7 +43,6 @@ export default async function handler(
       day: 'numeric',
     });
   } catch {
-    // if the passed timezone is invalid, fallback safely
     todayDate = new Date().toLocaleDateString('en-GB', {
       timeZone: 'UTC',
       weekday: 'long',
@@ -52,20 +51,38 @@ export default async function handler(
       day: 'numeric',
     });
   }
-
   const dateSystemMsg: Message = {
     role: 'system',
-    content: `Current date (${tz}): ${todayDate}. Use this for any “today” references.`,
+    content: `Current date (${tz}): **${todayDate}**.`,
   };
 
-  // 4️⃣ Detect time-sensitive queries
+  // 4️⃣ Enforce Markdown formatting from the model
+  const markdownSystemMsg: Message = {
+    role: 'system',
+    content: [
+      'Please respond **in Markdown** only.',
+      '- Use `##` for section headings.',
+      '- Use ordered lists (`1.`, `2.`) for step sequences.',
+      '- Use bullet lists (`-`) for groups of items.',
+      '- Bold (`**like this**`) and italicize (`*like this*`) for emphasis.',
+      '',
+      'Example output:',
+      '```md',
+      '## Latest News on <topic>',
+      '1. **Headline**: summary…',
+      '- **Key Point**: detail…',
+      '```',
+    ].join('\n'),
+  };
+
+  // 5️⃣ Detect time-sensitive queries
   const lastContent = messages[messages.length - 1].content.toLowerCase();
   const isRecentQuery = /\b(latest|today|news|breaking|this week|this month)\b/.test(
     lastContent
   );
 
-  // 5️⃣ Optionally prepend fresh search snippets
-  let augmented: Message[] = [dateSystemMsg, ...messages];
+  // 6️⃣ Optionally prepend fresh search snippets (last 24h)
+  let augmented: Message[] = [dateSystemMsg, markdownSystemMsg, ...messages];
   if (isRecentQuery) {
     try {
       const results = (await runTool('search_web', {
@@ -74,26 +91,29 @@ export default async function handler(
         numResults: 5,
       })) as SearchResult[];
 
-      const snippets = results.map(r => `• ${r.title} — ${r.snippet}`).join('\n');
+      const snippetList = results
+        .map((r, i) => `${i + 1}. **${r.title}**: ${r.snippet}`)
+        .join('\n');
       augmented = [
         dateSystemMsg,
+        markdownSystemMsg,
         {
           role: 'system',
-          content: `Here are the latest search results (last 24 h):\n${snippets}`,
+          content: `## Fresh Search Results (last 24h)\n${snippetList}`,
         },
         ...messages,
       ];
     } catch (err) {
       console.error('[Search Error]', err);
-      // continue without snippets
+      // proceed without snippets if search fails
     }
   }
 
-  // 6️⃣ Determine model
+  // 7️⃣ Choose the model
   const defaultModel = process.env.DEFAULT_MODEL!;
   const modelId = model || defaultModel;
 
-  // 7️⃣ Call Together.ai
+  // 8️⃣ Call Together.ai
   try {
     const { data } = await axios.post(
       'https://api.together.xyz/v1/chat/completions',
