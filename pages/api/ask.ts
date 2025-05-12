@@ -8,133 +8,126 @@ type Message = {
   content: string;
 };
 
+type ApiResponse = {
+  reply?: string;
+  error?: string;
+  stack?: string;
+};
+
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse<{ reply?: string; error?: string }>
+  res: NextApiResponse<ApiResponse>
 ) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  // 1️⃣ Pull in messages, model, and client timezone
-  const { messages, model, timezone } = req.body as {
-    messages: Message[];
-    model?: string;
-    timezone?: string;
-  };
-
-  // 2️⃣ Validate inputs
-  if (!Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: 'Missing messages' });
-  }
-  if (!process.env.TOGETHER_API_KEY) {
-    return res.status(500).json({ error: 'Missing TOGETHER_API_KEY' });
-  }
-
-  // 3️⃣ Build the “current date” system message in user’s timezone
-  const tz = typeof timezone === 'string' ? timezone : 'UTC';
-  let todayDate: string;
   try {
-    todayDate = new Date().toLocaleDateString('en-GB', {
-      timeZone: tz,
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  } catch {
-    todayDate = new Date().toLocaleDateString('en-GB', {
-      timeZone: 'UTC',
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  }
-  const dateSystemMsg: Message = {
-    role: 'system',
-    content: `Current date (${tz}): **${todayDate}**.`,
-  };
-
-  // 4️⃣ Enforce Markdown formatting from the model
-  const markdownSystemMsg: Message = {
-    role: 'system',
-    content: [
-      'Please respond **in Markdown** only.',
-      '- Use `##` for section headings.',
-      '- Use ordered lists (`1.`, `2.`) for step sequences.',
-      '- Use bullet lists (`-`) for groups of items.',
-      '- Bold (`**like this**`) and italicize (`*like this*`) for emphasis.',
-      '',
-      'Example output:',
-      '```md',
-      '## Latest News on <topic>',
-      '1. **Headline**: summary…',
-      '- **Key Point**: detail…',
-      '```',
-    ].join('\n'),
-  };
-
-  // 5️⃣ Detect time-sensitive queries
-  const lastContent = messages[messages.length - 1].content.toLowerCase();
-  const isRecentQuery = /\b(latest|today|news|breaking|this week|this month)\b/.test(
-    lastContent
-  );
-
-  // 6️⃣ Optionally prepend fresh search snippets (last 24h)
-  let augmented: Message[] = [dateSystemMsg, markdownSystemMsg, ...messages];
-  if (isRecentQuery) {
-    try {
-      const results = (await runTool('search_web', {
-        query: lastContent,
-        onlyRecent: true,
-        numResults: 5,
-      })) as SearchResult[];
-
-      const snippetList = results
-        .map((r, i) => `${i + 1}. **${r.title}**: ${r.snippet}`)
-        .join('\n');
-      augmented = [
-        dateSystemMsg,
-        markdownSystemMsg,
-        {
-          role: 'system',
-          content: `## Fresh Search Results (last 24h)\n${snippetList}`,
-        },
-        ...messages,
-      ];
-    } catch (err) {
-      console.error('[Search Error]', err);
-      // proceed without snippets if search fails
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
     }
-  }
 
-  // 7️⃣ Choose the model
-  const defaultModel = process.env.DEFAULT_MODEL!;
-  const modelId = model || defaultModel;
+    const { messages, model, timezone } = req.body as {
+      messages?: Message[];
+      model?: string;
+      timezone?: string;
+    };
 
-  // 8️⃣ Call Together.ai
-  try {
+    // validate inputs
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      throw new Error('Missing or invalid messages');
+    }
+    const TOG_KEY = process.env.TOGETHER_API_KEY;
+    const DEF_MODEL = process.env.DEFAULT_MODEL;
+    if (!TOG_KEY) throw new Error('Missing TOGETHER_API_KEY');
+    if (!DEF_MODEL) throw new Error('Missing DEFAULT_MODEL');
+
+    // build system prompts (date + markdown)
+    const tz = typeof timezone === 'string' ? timezone : 'UTC';
+    let todayDate: string;
+    try {
+      todayDate = new Date().toLocaleDateString('en-GB', {
+        timeZone: tz,
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+    } catch {
+      todayDate = new Date().toLocaleDateString('en-GB', {
+        timeZone: 'UTC',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+    }
+    const dateSystemMsg: Message = {
+      role: 'system',
+      content: `Current date (${tz}): **${todayDate}**.`,
+    };
+    const markdownSystemMsg: Message = {
+      role: 'system',
+      content: [
+        'Please respond **in Markdown** only.',
+        '- Use `##` for headings.',
+        '- Use ordered lists (`1.`) for sequences.',
+        '- Use bullets (`-`) for item lists.',
+        '',
+        '```md',
+        '## Example Heading',
+        '1. **Point**: detail',
+        '- **Note**: info',
+        '```',
+      ].join('\n'),
+    };
+
+    // detect freshness
+    const last = messages[messages.length - 1].content.toLowerCase();
+    const isRecent =
+      /\b(latest|today|news|breaking|this week|this month)\b/.test(last);
+
+    // build augmented array
+    let augmented: Message[] = [dateSystemMsg, markdownSystemMsg, ...messages];
+    if (isRecent) {
+      try {
+        const results = (await runTool('search_web', {
+          query: last,
+          onlyRecent: true,
+          numResults: 5,
+        })) as SearchResult[];
+        const snippetList = results
+          .map((r, i) => `${i + 1}. **${r.title}**: ${r.snippet}`)
+          .join('\n');
+        augmented = [
+          dateSystemMsg,
+          markdownSystemMsg,
+          {
+            role: 'system',
+            content: `## Fresh Search Results (24h)\n${snippetList}`,
+          },
+          ...messages,
+        ];
+      } catch (e) {
+        console.warn('[Search Error]', e);
+      }
+    }
+
+    // call Together.ai
+    const modelId = model || DEF_MODEL;
     const { data } = await axios.post(
       'https://api.together.xyz/v1/chat/completions',
-      {
-        model: modelId,
-        messages: augmented,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
+      { model: modelId, messages: augmented },
+      { headers: { Authorization: `Bearer ${TOG_KEY}` } }
     );
 
-    const reply = data.choices?.[0]?.message?.content || '';
+    const reply = data.choices?.[0]?.message?.content;
+    if (!reply) throw new Error('No reply returned from LLM');
     return res.status(200).json({ reply });
   } catch (err: any) {
-    console.error('[Together API Error]', err);
-    return res
-      .status(500)
-      .json({ error: err.response?.data?.error || err.message });
+    console.error('[api/ask] Error:', err);
+    // DEV-only: include stack trace
+    if (process.env.NODE_ENV !== 'production') {
+      return res
+        .status(500)
+        .json({ error: err.message, stack: err.stack });
+    }
+    return res.status(500).json({ error: 'Internal server error' });
   }
 }

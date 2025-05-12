@@ -1,54 +1,82 @@
 // components/ui/ChatThread.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
-  content: string; // now supports Markdown
+  content: string;
 }
 
 export default function ChatThread({ model }: { model: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom on new messages
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || loading) return;
 
-    const userMessage: ChatMessage = { role: 'user', content: text };
-    const updated = [...messages, userMessage];
+    // Add user message
+    const userMsg: ChatMessage = { role: 'user', content: text };
+    const updated = [...messages, userMsg];
     setMessages(updated);
     setInput('');
+    setLoading(true);
 
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const res = await fetch('/api/ask', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: updated, model, timezone }),
-    });
-    const data = await res.json();
+    try {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: updated, model, timezone }),
+      });
 
-    const assistantMessage: ChatMessage = {
-      role: 'assistant',
-      content: data.reply ?? `**Error:** ${data.error ?? 'Unknown error'}`,
-    };
-    setMessages((prev) => [...updated, assistantMessage]);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+
+      const assistantMsg: ChatMessage = {
+        role: 'assistant',
+        content: data.reply,
+      };
+      setMessages(prev => [...prev, assistantMsg]);
+    } catch (e: any) {
+      const errorMsg: ChatMessage = {
+        role: 'assistant',
+        content: `**Error:** ${e.message}`,
+      };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendMessage();
+    }
   };
 
   return (
     <div className="h-screen flex flex-col">
-      {/* Messages panel */}
-      <div className="flex-1 overflow-y-auto px-4 py-2 pb-20 space-y-2">
+      {/* Chat history */}
+      <div className="flex-1 overflow-y-auto p-4 pb-20 space-y-2">
         {messages.map((m, i) => (
           <div
             key={i}
-            className={`prose max-w-none break-words p-3 rounded-lg ${
+            className={`max-w-[80%] rounded-lg p-3 ${
               m.role === 'user'
-                ? 'self-end bg-blue-100 text-right'
-                : 'self-start bg-gray-100 text-left'
+                ? 'bg-blue-100 self-end text-right'
+                : 'bg-gray-100 self-start text-left'
             }`}
           >
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -56,22 +84,25 @@ export default function ChatThread({ model }: { model: string }) {
             </ReactMarkdown>
           </div>
         ))}
+        <div ref={bottomRef} />
       </div>
 
-      {/* Input bar - fixed at bottom */}
-      <div className="fixed bottom-0 left-0 w-full bg-white border-t px-4 py-3">
+      {/* Input bar */}
+      <div className="fixed bottom-0 left-0 w-full bg-white border-t p-4">
         <div className="flex items-center space-x-2">
           <input
             type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+            disabled={loading}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
             className="flex-1 border rounded px-3 py-2 focus:outline-none"
-            placeholder="Type a message…"
+            placeholder={loading ? 'Thinking…' : 'Type a message…'}
           />
           <button
             onClick={sendMessage}
-            className="px-4 py-2 bg-blue-600 text-white rounded"
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50"
           >
             Send
           </button>
