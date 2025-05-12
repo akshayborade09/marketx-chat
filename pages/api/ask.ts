@@ -144,7 +144,8 @@ export default async function handler(
     const reply = resp.data.choices?.[0]?.message?.content;
     if (!reply) throw new Error('No reply returned from GROQ API');
     return res.status(200).json({ reply });
-  } catch (err: unknown) {
+  } catch (_err: unknown) {
+
   // let msg = 'Unknown error';
   // if (axios.isAxiosError(err) && err.response?.data?.error?.message) {
   //   msg = err.response.data.error.message;
