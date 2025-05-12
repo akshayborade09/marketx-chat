@@ -1,6 +1,10 @@
+// lib/useModels.ts
 import { useState, useEffect } from 'react';
 
-export interface ModelOption { label: string; value: string; }
+export interface ModelOption {
+  label: string;
+  value: string;
+}
 
 export function useModels() {
   const [models, setModels] = useState<ModelOption[]>([]);

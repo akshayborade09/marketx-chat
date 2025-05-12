@@ -7,62 +7,61 @@ export type SearchResult = {
   snippet: string;
 };
 
-/**
- * Generic tool runner.
- */
-export async function runTool(name: string, args: any): Promise<any> {
-  switch (name) {
-    case 'search_web':
-      // args should be { query: string; onlyRecent?: boolean; numResults?: number }
-      return runSearchWeb(args);
-    // add other tools here…
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+export default async function runTool(
+  tool: 'search_web' | 'deepseek_r1',
+  params: {
+    query: string;
+    onlyRecent?: boolean;
+    numResults?: number;
+    pageSize?: number;
   }
-}
+): Promise<SearchResult[]> {
+  if (tool === 'search_web') {
+    const { query, onlyRecent = false, numResults = 5 } = params;
+    const KEY = process.env.BING_SEARCH_KEY!;
+    const ENDPOINT = process.env.BING_SEARCH_ENDPOINT!;
+    const searchParams: any = {
+      q: query,
+      count: numResults,
+      mkt: 'en-US',
+      safeSearch: 'Off',
+    };
+    if (onlyRecent) searchParams.freshness = 'Day';
 
-/**
- * Performs a Google Custom Search.
- *
- * @param query     The search query.
- * @param onlyRecent  If true, restricts to the last 24 hours and sorts by date.
- * @param numResults  Number of results to return (default 5).
- */
-export async function runSearchWeb({
-  query,
-  onlyRecent = false,
-  numResults = 5,
-}: {
-  query: string;
-  onlyRecent?: boolean;
-  numResults?: number;
-}): Promise<SearchResult[]> {
-  const key = process.env.GOOGLE_API_KEY;
-  const cx = process.env.GOOGLE_CSE_ID;
-  if (!key || !cx) {
-    throw new Error('Missing GOOGLE_API_KEY or GOOGLE_CSE_ID in .env.local');
+    const { data } = await axios.get(ENDPOINT, {
+      headers: { 'Ocp-Apim-Subscription-Key': KEY },
+      params: searchParams,
+    });
+
+    return (data.value || []).map((item: any) => ({
+      title: item.name,
+      link: item.url,
+      snippet: item.description,
+    }));
   }
 
-  const params: Record<string, any> = {
-    key,
-    cx,
-    q: query,
-    num: numResults,
-  };
+  if (tool === 'deepseek_r1') {
+    const { query, pageSize = 5 } = params;
+    const API_KEY = process.env.DEEPSEEK_API_KEY;
+    if (!API_KEY) throw new Error('Missing DEEPSEEK_API_KEY');
 
-  if (onlyRecent) {
-    params.sort = 'date';         // sort by newest
-    params.dateRestrict = 'd1';   // last 1 day
+    const { data } = await axios.post(
+      'https://api.deepseek.com/v1/search',
+      { query, pageSize },
+      {
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    return (data.hits || []).map((h: any) => ({
+      title: h.title,
+      link: h.url,
+      snippet: h.snippet,
+    }));
   }
 
-  const resp = await axios.get('https://www.googleapis.com/customsearch/v1', {
-    params,
-  });
-
-  const items = Array.isArray(resp.data.items) ? resp.data.items : [];
-  return items.map((item: any) => ({
-    title: item.title as string,
-    link: item.link as string,
-    snippet: item.snippet as string,
-  }));
+  throw new Error(`Unknown tool: ${tool}`);
 }

@@ -1,23 +1,40 @@
+// components/ui/ModelSelector.tsx
 'use client';
-import { useEffect, useState } from 'react';
-import { useModels } from '../../lib/useModels';
 
-type Props = { onChange: (model: string) => void };
+import { FC } from 'react';
 
-export default function ModelSelector({ onChange }: Props) {
-  const { models, loading } = useModels();
-  const [model, setModel] = useState('');
-  useEffect(() => {
-    if (!model && models.length) { setModel(models[0].value); onChange(models[0].value); }
-  }, [models, model, onChange]);
-  if (loading) return <span>Loading models…</span>;
-  return (
-    <select
-      value={model}
-      onChange={(e) => { setModel(e.target.value); onChange(e.target.value); }}
-      className="border rounded px-2 py-1 text-sm"
-    >
-      {models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-    </select>
-  );
+export interface ModelOption {
+  label: string;
+  value: string;
 }
+
+interface ModelSelectorProps {
+  models: ModelOption[];
+  value: string;
+  onChange: (model: string) => void;
+  className?: string;
+}
+
+const ModelSelector: FC<ModelSelectorProps> = ({
+  models,
+  value,
+  onChange,
+  className,
+}) => (
+  <select
+    value={value}
+    onChange={(e) => onChange(e.target.value)}
+    className={`block w-full border rounded-md px-3 py-2 text-sm
+                focus:outline-none focus:ring-2 focus:ring-blue-400
+                hover:border-gray-400 transition-colors
+                ${className || ''}`}
+  >
+    {models.map((m) => (
+      <option key={m.value} value={m.value}>
+        {m.label}
+      </option>
+    ))}
+  </select>
+);
+
+export default ModelSelector;
