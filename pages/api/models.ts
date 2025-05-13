@@ -10,8 +10,7 @@ export default function handler(
   const models: ModelOption[] = [
       { label: 'LLaMA 3 8B', value: 'llama3-8b-8192' },
       { label: 'LLaMA 3 70B', value: 'llama3-70b-8192' },
-      { label: 'Mixtral 8x7B', value: 'mixtral-8x7b-32768' },
-      { label: 'Gemma 7B IT', value: 'gemma-7b-it' },
+      { label: 'DeepSeek R1', value: 'deepseek_r1'},   
     ];
 
   res.status(200).json(models);

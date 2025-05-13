@@ -14,7 +14,12 @@ type ApiResponse = {
 };
 
 type ChatResponse = {
-  choices: { message: { role: string; content: string } }[];
+  choices: {
+    message: {
+      role: string;
+      content: string;
+    };
+  }[];
 };
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY?.trim();
@@ -29,9 +34,7 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
   if (!GROQ_API_KEY) {
-    return res
-      .status(500)
-      .json({ error: 'Missing GROQ_API_KEY in environment' });
+    return res.status(500).json({ error: 'Missing GROQ_API_KEY in environment' });
   }
 
   try {
@@ -41,13 +44,39 @@ export default async function handler(
       timezone?: string;
     };
 
-    if (!messages?.length) {
-      return res
-        .status(400)
-        .json({ error: 'Missing or invalid messages array' });
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'Missing or invalid messages array' });
     }
 
-    // ─── 1) System Prompts ─────────────────────────────────────────────────
+    const modelId = model || DEFAULT_MODEL;
+    const lastUserText = messages[messages.length - 1].content.trim();
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // If the user specifically selected DeepSeek R1, bypass the LLM and return hits:
+    if (modelId === 'deepseek_r1') {
+      try {
+        const hits = (await runTool('deepseek_r1', {
+          query: lastUserText,
+          numResults: 10,
+        })) as SearchResult[];
+
+        // Format as Markdown list
+        const reply = hits
+          .map((h, i) => `${i + 1}. [${h.title}](${h.link}): ${h.snippet}`)
+          .join('\n\n') || 'No results found.';
+
+        return res.status(200).json({ reply });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Unknown DeepSeek error';
+        console.error('[DeepSeek R1] Error:', msg);
+        return res.status(500).json({ error: `DeepSeek R1 failed: ${msg}` });
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // Otherwise, fall through to your existing Groq flow:
+
+    // 1) System prompts—date + Markdown instructions
     const tz = timezone || 'UTC';
     const today = new Date().toLocaleDateString('en-GB', {
       timeZone: tz,
@@ -56,6 +85,7 @@ export default async function handler(
       month: 'long',
       day: 'numeric',
     });
+
     const dateMsg: Message = {
       role: 'system',
       content: `Current date (${tz}): **${today}**.`,
@@ -76,84 +106,59 @@ export default async function handler(
       ].join('\n'),
     };
 
-    // ─── 2) Freshness & Complexity Detection ────────────────────────────────
-    const lastText = messages[messages.length - 1].content.toLowerCase();
-    const isFresh = /\b(today|latest|breaking|news|this week)\b/.test(lastText);
-    const shouldDeepSeek = lastText.length > 50; // simple heuristic
+    // 2) Detect fresh or complex query
+    const lower = lastUserText.toLowerCase();
+    const isFresh = /\b(today|latest|breaking|news|this week)\b/.test(lower);
+    const shouldDeepSeek = lower.length > 50;
 
-    // ─── 3) Enrich with external tools ──────────────────────────────────────
+    // 3) Build enriched prompt
     const enriched: Message[] = [dateMsg, markdownMsg];
 
     if (isFresh) {
-      // 3a) Web search
       try {
-        const webResults = (await runTool('search_web', {
-          query: lastText,
+        const web = (await runTool('search_web', {
+          query: lower,
           onlyRecent: true,
           numResults: 5,
         })) as SearchResult[];
-        const webSnips = webResults
-          .map((r, i) => `${i + 1}. **${r.title}**: ${r.snippet}`)
-          .join('\n');
-        enriched.push({
-          role: 'system',
-          content: `## Recent Web Results\n${webSnips}`,
-        });
-      } catch (e) {
-        console.warn('[search_web] failed', e);
+
+        const list = web.map((w, i) => `${i + 1}. **${w.title}**: ${w.snippet}`).join('\n');
+        enriched.push({ role: 'system', content: `## Recent Web Results\n${list}` });
+      } catch (webErr: unknown) {
+        console.warn('[search_web] failed:', webErr);
       }
     }
 
     if (shouldDeepSeek) {
-      // 3b) DeepSeek R1
       try {
-        const deepResults = (await runTool('deepseek_r1', {
-          query: lastText,
-          numResults: 5,      // use numResults here
+        const deep = (await runTool('deepseek_r1', {
+          query: lower,
+          numResults: 5,
         })) as SearchResult[];
-        const deepSnips = deepResults
-          .map((r, i) => `${i + 1}. **${r.title}**: ${r.snippet}`)
-          .join('\n');
-        enriched.push({
-          role: 'system',
-          content: `## DeepSeek Insights\n${deepSnips}`,
-        });
-      } catch (e) {
-        console.warn('[deepseek_r1] failed', e);
+
+        const list = deep.map((d, i) => `${i + 1}. **${d.title}**: ${d.snippet}`).join('\n');
+        enriched.push({ role: 'system', content: `## DeepSeek Insights\n${list}` });
+      } catch (dsErr: unknown) {
+        console.warn('[deepseek_r1] failed:', dsErr);
       }
     }
 
-    // ─── 4) Append original conversation ────────────────────────────────────
+    // Append the user & assistant history
     enriched.push(...messages);
 
-    // ─── 5) GROQ API Call ──────────────────────────────────────────────────
-    const resp = await axios.post<ChatResponse>(
+    // 4) Call Groq
+    const { data } = await axios.post<ChatResponse>(
       GROQ_ENDPOINT,
-      {
-        model: model || DEFAULT_MODEL,
-        messages: enriched,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
+      { model: modelId, messages: enriched },
+      { headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' } }
     );
 
-    const reply = resp.data.choices?.[0]?.message?.content;
-    if (!reply) throw new Error('No reply returned from GROQ API');
+    const reply = data.choices?.[0]?.message?.content;
+    if (!reply) throw new Error('No reply from Groq API');
     return res.status(200).json({ reply });
-  } catch (_err: unknown) {
-
-  // let msg = 'Unknown error';
-  // if (axios.isAxiosError(err) && err.response?.data?.error?.message) {
-  //   msg = err.response.data.error.message;
-  // } else if (err instanceof Error) {
-  //   msg = err.message;
-  // }
-  // console.error('[ask.ts] Groq Error:', msg);
-  // return res.status(500).json({ error: `GROQ API Error: ${msg}` });
-}
-
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[api/ask] Error:', msg);
+    return res.status(500).json({ error: `Server error: ${msg}` });
+  }
 }

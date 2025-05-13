@@ -1,5 +1,5 @@
 // lib/tool-executor.ts
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 
 export type SearchResult = {
   title: string;
@@ -28,40 +28,50 @@ export default async function runTool(
     };
     if (onlyRecent) searchParams.freshness = 'Day';
 
-    const { data } = await axios.get(ENDPOINT, {
-      headers: { 'Ocp-Apim-Subscription-Key': KEY },
-      params: searchParams,
-    });
+    const { data } = await axios.get<{ value: Array<{ name: string; url: string; description: string }> }>(
+      ENDPOINT,
+      {
+        headers: { 'Ocp-Apim-Subscription-Key': KEY },
+        params: searchParams,
+      }
+    );
 
-    return (data.value || []).map((item: any) => ({
+    return (data.value || []).map((item) => ({
       title: item.name,
       link: item.url,
       snippet: item.description,
     }));
   }
 
-  if (tool === 'deepseek_r1') {
-    const { query, pageSize = 5 } = params;
-    const API_KEY = process.env.DEEPSEEK_API_KEY;
-    if (!API_KEY) throw new Error('Missing DEEPSEEK_API_KEY');
+  // lib/tool-executor.ts (DeepSeek branch)
+if (tool === 'deepseek_r1') {
+  const { query } = params;
+  const size = params.numResults ?? params.pageSize ?? 5;
+  const API_KEY = process.env.DEEPSEEK_API_KEY;
+  if (!API_KEY) throw new Error('Missing DEEPSEEK_API_KEY');
 
-    const { data } = await axios.post(
-      'https://api.deepseek.com/v1/search',
-      { query, pageSize },
-      {
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
+  try {
+    // corrected endpoint & payload
+    const { data } = await axios.post<{ hits: any[] }>(
+      'https://api.deepseek.ai/v1beta/search',
+      { q: query, size },
+      { headers: { Authorization: `Bearer ${API_KEY}` } }
     );
 
-    return (data.hits || []).map((h: any) => ({
+    return (data.hits || []).map((h) => ({
       title: h.title,
       link: h.url,
       snippet: h.snippet,
     }));
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) {
+      console.warn('[deepseek_r1] 404 Not Found – returning empty results');
+      return [];
+    }
+    throw err;
   }
+}
+
 
   throw new Error(`Unknown tool: ${tool}`);
 }
